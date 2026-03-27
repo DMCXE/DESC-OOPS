@@ -57,6 +57,7 @@ from ..compute.data_index import is_0d_vol_grid, is_1dr_rad_grid, is_1dz_tor_gri
 from .coords import (
     _map_clebsch_coordinates,
     get_rtz_grid,
+    get_rtz_grid_from_source,
     is_nested,
     map_coordinates,
     to_sfl,
@@ -1357,6 +1358,18 @@ class Equilibrium(IOAble, Optimizable):
         """
         return get_rtz_grid(
             self, radial, poloidal, toroidal, coordinates, period, jitable, **kwargs
+        )
+
+    def _get_rtz_grid_from_source(
+        self, source_grid, jitable=True, point_cloud=None, **kwargs
+    ):
+        """Return DESC ``rtz`` grid from an already-built source grid."""
+        return get_rtz_grid_from_source(
+            self,
+            source_grid,
+            jitable=jitable,
+            point_cloud=point_cloud,
+            **kwargs,
         )
 
     @staticmethod

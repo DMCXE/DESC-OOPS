@@ -814,3 +814,74 @@ def get_rtz_grid(
         **idx,
     )
     return desc_grid
+
+
+def get_rtz_grid_from_source(eq, source_grid, jitable=True, point_cloud=None, **kwargs):
+    """Return DESC ``rtz`` grid from an already-built source grid.
+
+    Parameters
+    ----------
+    eq : Equilibrium
+        Equilibrium on which to perform coordinate mapping.
+    source_grid : Grid
+        Grid in non-``rtz`` coordinates whose nodes should be mapped to DESC
+        computational coordinates.
+    jitable : bool, optional
+        Whether the returned grid should skip non-JIT-safe bookkeeping.
+    point_cloud : bool or None, optional
+        Whether the mapped ``rtz`` grid should be treated as a point cloud rather
+        than a tensor-product mesh. If ``None``, defaults to
+        ``not source_grid.is_meshgrid``.
+    kwargs
+        Additional parameters to supply to the coordinate mapping function.
+        See ``desc.equilibrium.coords.map_coordinates``.
+
+    Returns
+    -------
+    desc_grid : Grid
+        DESC coordinate grid for the given source grid.
+
+    """
+    if "iota" in kwargs:
+        kwargs["iota"] = source_grid.expand(jnp.atleast_1d(kwargs["iota"]))
+    inbasis = {
+        "r": "rho",
+        "t": "theta",
+        "v": "theta_PEST",
+        "a": "alpha",
+        "z": "zeta",
+        "p": "phi",
+    }
+    rtz_nodes = map_coordinates(
+        eq,
+        source_grid.nodes,
+        inbasis=[inbasis[char] for char in source_grid.coordinates],
+        outbasis=("rho", "theta", "zeta"),
+        period=source_grid.period,
+        **kwargs,
+    )
+    point_cloud = setdefault(point_cloud, not source_grid.is_meshgrid)
+    idx = {}
+    if inbasis[source_grid.coordinates[0]] == "rho":
+        idx["_unique_rho_idx"] = source_grid.unique_rho_idx
+        idx["_inverse_rho_idx"] = source_grid.inverse_rho_idx
+    if point_cloud:
+        num_nodes = rtz_nodes.shape[0]
+        arange = jnp.arange(num_nodes)
+        idx["_unique_poloidal_idx"] = arange
+        idx["_inverse_poloidal_idx"] = arange
+        idx["_unique_zeta_idx"] = arange
+        idx["_inverse_zeta_idx"] = arange
+    else:
+        idx["_unique_poloidal_idx"] = source_grid.unique_poloidal_idx
+        idx["_inverse_poloidal_idx"] = source_grid.inverse_poloidal_idx
+        idx["_unique_zeta_idx"] = source_grid.unique_zeta_idx
+        idx["_inverse_zeta_idx"] = source_grid.inverse_zeta_idx
+    return Grid(
+        nodes=rtz_nodes,
+        coordinates="rtz",
+        source_grid=source_grid,
+        sort=False,
+        jitable=jitable,
+        **idx,
+    )

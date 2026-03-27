@@ -64,6 +64,7 @@ from desc.objectives import (
     FusionPower,
     GammaC,
     GenericObjective,
+    FluxCompressionITGProxy,
     HeatingPowerISS04,
     Isodynamicity,
     LinearObjectiveFromUser,
@@ -2114,6 +2115,207 @@ class TestObjectiveFunction:
         np.testing.assert_allclose(obj.compute(eq.params_dict), lam)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("surface_average", ["clebsch", "pest", "desc"])
+    def test_objective_compute_against_compute_flux_compression_itg_proxy(
+        self, surface_average
+    ):
+        """FluxCompressionITGProxy matches the corresponding compute function."""
+        eq = get("ESTELL")
+        rho = np.array([0.35, 0.7])
+        alpha = np.linspace(0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 4, endpoint=False)
+        nzeta = 16
+        flux_compression_k = 10.0
+        obj = FluxCompressionITGProxy(
+            eq=eq,
+            rho=rho,
+            alpha=alpha,
+            nzeta=nzeta,
+            flux_compression_k=flux_compression_k,
+            surface_average=surface_average,
+        )
+        obj.build(use_jit=False, verbose=0)
+        grid = Grid.create_meshgrid(
+            [rho, alpha, obj.constants["zeta"]], coordinates="raz"
+        )
+        data = eq.compute(
+            "flux compression proxy",
+            grid=grid,
+            flux_compression_k=flux_compression_k,
+            surface_average=surface_average,
+        )
+        np.testing.assert_allclose(
+            obj.compute(eq.params_dict),
+            grid.compress(data["flux compression proxy"]),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("surface_average", ["clebsch", "pest", "desc"])
+    def test_objective_compute_flux_compression_itg_proxy_use_pest_matches_manual_average(
+        self, surface_average
+    ):
+        """FluxCompressionITGProxy(use_PEST=True) matches a manual PEST-sampled average."""
+        eq = get("ESTELL")
+        rho = np.array([0.35, 0.7])
+        alpha = np.linspace(0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 4, endpoint=False)
+        nzeta = 12
+        flux_compression_k = 10.0
+        obj = FluxCompressionITGProxy(
+            eq=eq,
+            rho=rho,
+            alpha=alpha,
+            nzeta=nzeta,
+            flux_compression_k=flux_compression_k,
+            surface_average=surface_average,
+            use_PEST=True,
+        )
+        obj.build(use_jit=False, verbose=0)
+        iota_data, iota, iota_r = obj._get_iota_data(eq, eq.params_dict, obj.constants)
+        theta_pest = np.asarray(obj.constants["theta_pest"])
+        rho_grid, alpha_grid, theta_grid = np.meshgrid(
+            rho, alpha, theta_pest, indexing="ij"
+        )
+        zeta_grid = (theta_grid - alpha_grid) / iota[:, None, None]
+        nodes = np.column_stack(
+            [rho_grid.reshape(-1), alpha_grid.reshape(-1), zeta_grid.reshape(-1)]
+        )
+        grid = Grid(
+            nodes,
+            coordinates="raz",
+            period=(np.inf, np.inf, np.inf),
+            NFP=eq.NFP,
+            sort=False,
+        )
+        weight_key = {
+            "clebsch": "sqrt(g)_Clebsch",
+            "pest": "sqrt(g)_PEST",
+            "desc": "sqrt(g)",
+        }[surface_average]
+        data = eq.compute(
+            ["flux compression integrand", weight_key],
+            grid=grid,
+            data={
+                "iota": grid.expand(iota),
+                "iota_r": grid.expand(iota_r),
+                "a": iota_data["a"],
+            },
+            override_grid=False,
+            flux_compression_k=flux_compression_k,
+        )
+        shape = (rho.size, alpha.size, theta_pest.size)
+        integrand = np.asarray(data["flux compression integrand"]).reshape(shape)
+        weights = np.abs(np.asarray(data[weight_key]).reshape(shape))
+        expected = np.mean(integrand * weights, axis=(1, 2)) / np.mean(
+            weights, axis=(1, 2)
+        )
+        np.testing.assert_allclose(
+            obj.compute(eq.params_dict), expected, rtol=3e-5, atol=1e-7
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("use_PEST", [False, True])
+    def test_objective_compute_flux_compression_itg_proxy_batching_consistency(
+        self, use_PEST
+    ):
+        """FluxCompressionITGProxy batching matches the unbatched objective."""
+        eq = get("ESTELL")
+        kwargs = {
+            "eq": eq,
+            "rho": np.array([0.35, 0.55, 0.7]),
+            "alpha": np.linspace(
+                0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 4, endpoint=False
+            ),
+            "nzeta": 16,
+            "flux_compression_k": 10.0,
+            "surface_average": "desc",
+            "use_PEST": use_PEST,
+        }
+        base = FluxCompressionITGProxy(**kwargs)
+        base.build(use_jit=False, verbose=0)
+        expected = base.compute(eq.params_dict)
+
+        for batch_kwargs in (
+            {"fieldline_batch_size": 2},
+            {"surf_batch_size": 1},
+            {"fieldline_batch_size": 2, "surf_batch_size": 1},
+        ):
+            obj = FluxCompressionITGProxy(**kwargs, **batch_kwargs)
+            obj.build(use_jit=False, verbose=0)
+            np.testing.assert_allclose(obj.compute(eq.params_dict), expected)
+
+    @pytest.mark.unit
+    def test_objective_compute_flux_compression_itg_proxy_default_matches_none(self):
+        """FluxCompressionITGProxy defaults to a hard Heaviside bad-curvature mask."""
+        eq = get("ESTELL")
+        kwargs = {
+            "eq": eq,
+            "rho": np.array([0.35, 0.7]),
+            "alpha": np.linspace(
+                0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 4, endpoint=False
+            ),
+            "nzeta": 16,
+        }
+        obj_default = FluxCompressionITGProxy(**kwargs)
+        obj_none = FluxCompressionITGProxy(**kwargs, flux_compression_k=None)
+        obj_default.build(use_jit=False, verbose=0)
+        obj_none.build(use_jit=False, verbose=0)
+
+        np.testing.assert_allclose(
+            obj_default.compute(eq.params_dict), obj_none.compute(eq.params_dict)
+        )
+
+    @pytest.mark.unit
+    def test_objective_compute_flux_compression_itg_proxy_use_pest_grad_no_nan(self):
+        """FluxCompressionITGProxy(use_PEST=True) supports finite objective gradients."""
+        eq = get("ESTELL")
+        objective = ObjectiveFunction(
+            FluxCompressionITGProxy(
+                eq=eq,
+                rho=np.array([0.35]),
+                alpha=np.linspace(
+                    0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 2, endpoint=False
+                ),
+                nzeta=8,
+                surface_average="desc",
+                use_PEST=True,
+            )
+        )
+        objective.build(use_jit=True, verbose=0)
+        grad = objective.grad(objective.x())
+        assert not np.any(np.isnan(grad))
+        assert not np.any(np.isinf(grad))
+
+    @pytest.mark.unit
+    def test_objective_grad_flux_compression_itg_proxy_use_pest_batching_consistency(
+        self,
+    ):
+        """FluxCompressionITGProxy(use_PEST=True) gradients match with batching."""
+        eq = get("ESTELL")
+        kwargs = {
+            "eq": eq,
+            "rho": np.array([0.35]),
+            "alpha": np.linspace(
+                0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 2, endpoint=False
+            ),
+            "nzeta": 8,
+            "surface_average": "desc",
+            "use_PEST": True,
+        }
+        base = ObjectiveFunction(FluxCompressionITGProxy(**kwargs))
+        base.build(use_jit=True, verbose=0)
+        grad_expected = base.grad(base.x())
+
+        batched = ObjectiveFunction(
+            FluxCompressionITGProxy(**kwargs, fieldline_batch_size=1)
+        )
+        batched.build(use_jit=True, verbose=0)
+        grad = batched.grad(batched.x())
+        assert not np.any(np.isnan(grad))
+        assert not np.any(np.isinf(grad))
+        np.testing.assert_allclose(grad, grad_expected)
+
+    @pytest.mark.unit
     def test_generic_with_kwargs(self):
         """Test GenericObjective with keyword arguments. Related to issue #1224."""
         eq = desc.examples.get("reactor_QA")
@@ -3190,6 +3392,17 @@ def _reduced_resolution_objective(eq, objective, **kwargs):
         kwargs["num_pitch"] = 16
         kwargs["num_quad"] = 16
         kwargs["jac_chunk_size"] = 1
+    if objective is FluxCompressionITGProxy:
+        kwargs.setdefault("rho", np.array([0.5]))
+        kwargs.setdefault(
+            "alpha",
+            (
+                np.linspace(0, (1 + eq.sym) * np.pi, (1 + eq.sym) * 2, endpoint=False)
+                if eq.N
+                else np.array([0.0])
+            ),
+        )
+        kwargs.setdefault("nzeta", 16 if eq.N else 1)
     return objective(eq=eq, **kwargs)
 
 
@@ -3713,6 +3926,7 @@ class TestObjectiveNaNGrad:
         ForceBalanceAnisotropic,
         FusionPower,
         GammaC,
+        FluxCompressionITGProxy,
         HeatingPowerISS04,
         LinkingCurrentConsistency,
         Omnigenity,
@@ -4071,6 +4285,32 @@ class TestObjectiveNaNGrad:
 
         obj = ObjectiveFunction(
             _reduced_resolution_objective(eq, GammaC, use_bounce1d=True)
+        )
+        obj.build(verbose=0)
+        g = obj.grad(obj.x())
+        assert not np.any(np.isnan(g))
+
+    @pytest.mark.unit
+    def test_objective_no_nangrad_flux_compression_itg_proxy(self):
+        """FluxCompressionITGProxy."""
+        eq = get("ESTELL")
+        obj = ObjectiveFunction(
+            _reduced_resolution_objective(eq, FluxCompressionITGProxy)
+        )
+        obj.build(verbose=0)
+        g = obj.grad(obj.x())
+        assert not np.any(np.isnan(g))
+
+    @pytest.mark.unit
+    def test_objective_no_nangrad_flux_compression_itg_proxy_batched(self):
+        """FluxCompressionITGProxy with field-line batching."""
+        eq = get("ESTELL")
+        obj = ObjectiveFunction(
+            _reduced_resolution_objective(
+                eq,
+                FluxCompressionITGProxy,
+                fieldline_batch_size=1,
+            )
         )
         obj.build(verbose=0)
         g = obj.grad(obj.x())
