@@ -3666,6 +3666,44 @@ def test_quasiisodynamicity_matches_compute_quantity():
     np.testing.assert_allclose(obj.compute(eq.params_dict), expected)
 
 
+@pytest.mark.unit
+def test_quasiisodynamicity_batched_jit_compute_scaled_error():
+    """Batched qimetric objective should JIT with static batch hyperparameters."""
+    surf = FourierRZToroidalSurface.from_qp_model(
+        major_radius=1,
+        aspect_ratio=12,
+        elongation=5,
+        mirror_ratio=0.2,
+        torsion=0.1,
+        NFP=1,
+        sym=True,
+    )
+    eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
+    obj = ObjectiveFunction(
+        QuasiIsodynamicity(
+            eq=eq,
+            grid=LinearGrid(rho=np.array([0.5]), M=2, N=2),
+            alpha=np.linspace(0, 2 * np.pi, 4, endpoint=False),
+            nphi=33,
+            nB=17,
+            M_booz=4,
+            N_booz=4,
+            fieldline_batch_size=2,
+            surf_batch_size=1,
+        ),
+        use_jit=True,
+    )
+    obj.build(verbose=0)
+
+    f = obj.compute_scaled_error(obj.x(), obj.constants)
+    f.block_until_ready()
+    assert np.all(np.isfinite(np.asarray(f)))
+
+    g = obj.grad(obj.x(), obj.constants)
+    g.block_until_ready()
+    assert np.all(np.isfinite(np.asarray(g)))
+
+
 def _reduced_resolution_objective(eq, objective, **kwargs):
     """Speed up testing suite by defining rules to reduce objective resolution."""
     if objective in {EffectiveRipple, GammaC}:

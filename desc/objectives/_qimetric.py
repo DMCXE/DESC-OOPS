@@ -56,6 +56,7 @@ class QuasiIsodynamicity(_Objective):
     _units = "(dimensionless)"
     _print_value_fmt = "Quasi-isodynamicity error: "
     _static_attrs = _Objective._static_attrs + [
+        "_hyperparam",
         "_M_booz",
         "_N_booz",
         "_alpha",
@@ -63,8 +64,6 @@ class QuasiIsodynamicity(_Objective):
         "_nphi",
         "_zeta0",
         "_eps",
-        "_fieldline_batch_size",
-        "_surf_batch_size",
     ]
 
     def __init__(
@@ -103,10 +102,12 @@ class QuasiIsodynamicity(_Objective):
         self._N_booz = N_booz
         self._zeta0 = float(zeta0)
         self._eps = float(eps)
-        self._fieldline_batch_size = check_posint(
-            fieldline_batch_size, "fieldline_batch_size"
-        )
-        self._surf_batch_size = check_posint(surf_batch_size, "surf_batch_size")
+        self._hyperparam = {
+            "fieldline_batch_size": check_posint(
+                fieldline_batch_size, "fieldline_batch_size"
+            ),
+            "surf_batch_size": check_posint(surf_batch_size, "surf_batch_size"),
+        }
         super().__init__(
             things=eq,
             target=target,
@@ -163,8 +164,6 @@ class QuasiIsodynamicity(_Objective):
             "levels": jnp.linspace(0.0, 1.0, self._nB),
             "quad_weights": 1.0,
             "eps": self._eps,
-            "fieldline_batch_size": self._fieldline_batch_size,
-            "surf_batch_size": self._surf_batch_size,
         }
 
         timer.stop("Precomputing transforms")
@@ -187,8 +186,7 @@ class QuasiIsodynamicity(_Objective):
             zeta=constants["zeta"],
             levels=constants["levels"],
             eps=constants["eps"],
-            fieldline_batch_size=constants["fieldline_batch_size"],
-            surf_batch_size=constants["surf_batch_size"],
+            **self._hyperparam,
         )
         residual = data["qimetric residual"]
         residual = residual / jnp.sqrt(constants["alpha"].size * constants["zeta"].size)
