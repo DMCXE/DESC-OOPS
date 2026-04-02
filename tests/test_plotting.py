@@ -51,6 +51,7 @@ from desc.plotting import (
     plot_grid,
     plot_logo,
     plot_particle_trajectories,
+    plot_qimetric,
     plot_qs_error,
     plot_section,
     plot_surfaces,
@@ -942,6 +943,41 @@ class TestPlotBoozerSurface:
             x_lmn=np.array([0, -np.pi / 8, 0, np.pi / 8, 0, np.pi / 4]),
         )
         fig, ax = plot_boozer_surface(field, iota=0.6, fieldlines=4)
+        return fig
+
+
+class TestPlotQimetric:
+    """Tests for plot_qimetric."""
+
+    @pytest.mark.unit
+    @pytest.mark.slow
+    @pytest.mark.mpl_image_compare(remove_text=True, tolerance=tol_2d)
+    def test_plot_qimetric(self):
+        """Test Goodman qimetric diagnostic plot."""
+        eq = get("WISTELL-A")
+        fig, ax, data = plot_qimetric(
+            eq,
+            M_booz=eq.M,
+            N_booz=eq.N,
+            rho=0.5,
+            fieldlines=4,
+            nphi=65,
+            nB=17,
+            return_data=True,
+        )
+        for string in [
+            "rho",
+            "alpha",
+            "zeta",
+            "|B|",
+            "|B|_constructed",
+            "|B|_target",
+            "weights",
+            "bounce_points",
+            "shuffled_knots",
+            "residual",
+        ]:
+            assert string in data.keys()
         return fig
 
 
