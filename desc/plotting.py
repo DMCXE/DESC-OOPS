@@ -55,6 +55,7 @@ __all__ = [
     "plot_logo",
     "plot_qs_error",
     "plot_particle_trajectories",
+    "plot_qimetric",
     "plot_section",
     "plot_surfaces",
     "poincare_plot",
@@ -3341,6 +3342,192 @@ def plot_boozer_surface(
 
     if return_data:
         plot_data = {"theta_B": theta_B, "zeta_B": zeta_B, "|B|": B}
+        return fig, ax, plot_data
+
+    return fig, ax
+
+
+def plot_qimetric(
+    eq,
+    grid_compute=None,
+    rho=1,
+    alpha=None,
+    fieldlines=4,
+    nphi=200,
+    nB=81,
+    ax=None,
+    return_data=False,
+    **kwargs,
+):
+    """Plot single-surface Goodman qimetric diagnostics along Boozer field lines.
+
+    Parameters
+    ----------
+    eq : Equilibrium
+        Object from which to plot.
+    grid_compute : Grid, optional
+        Grid used to compute Boozer harmonics.
+    rho : float, optional
+        Flux surface label to inspect if ``grid_compute`` is not supplied.
+    alpha : ndarray, optional
+        Boozer field-line labels to plot. If omitted, ``fieldlines`` equally spaced
+        field lines are used.
+    fieldlines : int, optional
+        Number of equally spaced field lines to plot when ``alpha`` is omitted.
+    nphi : int, optional
+        Number of Boozer toroidal samples per field line.
+    nB : int, optional
+        Number of normalized field-strength levels used in the Goodman shuffle.
+    ax : matplotlib AxesSubplot or ndarray of Axes, optional
+        Axis or two axes to plot on.
+    return_data : bool
+        If True, return the plotted data as well as fig, ax.
+    **kwargs : dict, optional
+        Specify properties of the figure, axis, and plot appearance. Valid keyword
+        arguments are:
+
+        * ``M_booz``: int, Boozer poloidal resolution. Default ``2 * eq.M``.
+        * ``N_booz``: int, Boozer toroidal resolution. Default ``2 * eq.N``.
+        * ``zeta0``: float, Boozer toroidal origin of the sampled period.
+        * ``eps``: float, Goodman regularization/ordering tolerance.
+        * ``fieldline_batch_size``: int, number of field lines processed together.
+        * ``surf_batch_size``: int, number of surfaces processed together. Default 1.
+        * ``figsize``: tuple of length 2, matplotlib figure size.
+        * ``legend``: bool, whether to display legends. Default True.
+        * ``xlabel_fontsize``: float, fontsize of the xlabels.
+        * ``ylabel_fontsize``: float, fontsize of the ylabels.
+        * ``title_fontsize``: float, fontsize of the titles.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure being plotted to.
+    ax : ndarray of matplotlib.axes.Axes
+        Axes being plotted to.
+    plot_data : dict
+        Dictionary of plotted arrays, only returned if ``return_data=True``.
+    """
+    M_booz = kwargs.pop("M_booz", 2 * eq.M)
+    N_booz = kwargs.pop("N_booz", 2 * eq.N)
+    zeta0 = kwargs.pop("zeta0", 0.0)
+    eps = kwargs.pop("eps", 1e-12)
+    fieldline_batch_size = kwargs.pop("fieldline_batch_size", None)
+    surf_batch_size = kwargs.pop("surf_batch_size", 1)
+    legend = kwargs.pop("legend", True)
+    title_fontsize = kwargs.pop("title_fontsize", None)
+    xlabel_fontsize = kwargs.pop("xlabel_fontsize", None)
+    ylabel_fontsize = kwargs.pop("ylabel_fontsize", None)
+    fieldlines = check_posint(fieldlines, "fieldlines", False)
+
+    if alpha is None:
+        alpha = np.linspace(0, 2 * np.pi, fieldlines, endpoint=False)
+    alpha = np.atleast_1d(alpha)
+    zeta = np.linspace(zeta0, zeta0 + 2 * np.pi / eq.NFP, nphi)
+    levels = np.linspace(0.0, 1.0, nB)
+
+    if grid_compute is None:
+        grid_compute = LinearGrid(
+            rho=np.atleast_1d(rho),
+            M=2 * M_booz,
+            N=2 * N_booz,
+            NFP=eq.NFP,
+            sym=False,
+        )
+    errorif(
+        grid_compute.num_rho != 1,
+        ValueError,
+        "plot_qimetric only supports a single flux surface.",
+    )
+
+    names = [
+        "qimetric |B|",
+        "qimetric constructed |B|",
+        "qimetric target |B|",
+        "qimetric weights",
+        "qimetric bounce points",
+        "qimetric shuffled knots",
+        "qimetric residual",
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        data = eq.compute(
+            names,
+            grid=grid_compute,
+            M_booz=M_booz,
+            N_booz=N_booz,
+            alpha=alpha,
+            zeta=zeta,
+            levels=levels,
+            eps=eps,
+            fieldline_batch_size=fieldline_batch_size,
+            surf_batch_size=surf_batch_size,
+        )
+
+    na = alpha.size
+    nk = 2 * nB - 1
+    B = np.asarray(data["qimetric |B|"]).reshape((1, na, nphi))[0]
+    B_constructed = np.asarray(data["qimetric constructed |B|"]).reshape(
+        (1, na, nphi)
+    )[0]
+    B_target = np.asarray(data["qimetric target |B|"]).reshape((1, na, nphi))[0]
+    weights = np.asarray(data["qimetric weights"]).reshape((1, na))[0]
+    bounce_points = np.asarray(data["qimetric bounce points"]).reshape((1, na, nk))[0]
+    shuffled_knots = np.asarray(data["qimetric shuffled knots"]).reshape(
+        (1, na, nk)
+    )[0]
+    residual = np.asarray(data["qimetric residual"]).reshape((1, na, nphi))[0]
+
+    fig, ax = _format_ax(ax, rows=2, cols=1, figsize=kwargs.pop("figsize", (7, 6)))
+    ax = np.atleast_1d(ax).flatten()
+    cmap = _get_cmap("viridis", na)
+    values = np.concatenate([levels[::-1], levels[1:]])
+
+    for i, alpha_i in enumerate(alpha):
+        color = cmap(i / max(na - 1, 1))
+        label = rf"$\alpha={alpha_i:.2f}$"
+        ax[0].plot(zeta, B[i], color=color, label=label)
+        ax[0].plot(zeta, B_constructed[i], color=color, ls="--")
+        ax[1].plot(zeta, B[i], color=color, label=label)
+        ax[1].plot(zeta, B_target[i], color=color, ls="--")
+        ax[1].scatter(
+            shuffled_knots[i],
+            values,
+            s=8,
+            color=color,
+            alpha=0.5,
+            linewidths=0,
+        )
+
+    ax[0].set_ylabel(r"$|B|$", fontsize=ylabel_fontsize)
+    ax[1].set_ylabel(r"$|B|$", fontsize=ylabel_fontsize)
+    ax[1].set_xlabel(r"$\zeta_{Boozer}$", fontsize=xlabel_fontsize)
+    ax[0].set_title("Original and squash-stretch wells", fontsize=title_fontsize)
+    ax[1].set_title("Original and QI target wells", fontsize=title_fontsize)
+    ax[0].set_xlim([zeta[0], zeta[-1]])
+    ax[1].set_xlim([zeta[0], zeta[-1]])
+
+    if legend:
+        ax[0].legend(loc="best", fontsize="x-small")
+        ax[1].legend(loc="best", fontsize="x-small")
+
+    assert (
+        len(kwargs) == 0
+    ), f"plot_qimetric got unexpected keyword argument: {kwargs.keys()}"
+
+    _set_tight_layout(fig)
+    if return_data:
+        plot_data = {
+            "rho": grid_compute.nodes[grid_compute.unique_rho_idx, 0].copy(),
+            "alpha": alpha,
+            "zeta": zeta,
+            "|B|": B,
+            "|B|_constructed": B_constructed,
+            "|B|_target": B_target,
+            "weights": weights,
+            "bounce_points": bounce_points,
+            "shuffled_knots": shuffled_knots,
+            "residual": residual,
+        }
         return fig, ax, plot_data
 
     return fig, ax

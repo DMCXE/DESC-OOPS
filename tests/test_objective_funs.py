@@ -25,6 +25,12 @@ from desc.coils import (
     MixedCoilSet,
     initialize_modular_coils,
 )
+from desc.compute._qimetric import (
+    _crossing_points,
+    _goodman_poloidal_target,
+    _project_knots,
+    _stretch_well,
+)
 from desc.compute import get_transforms
 from desc.equilibrium import Equilibrium
 from desc.examples import get
@@ -36,8 +42,6 @@ from desc.magnetic_fields import (
     CurrentPotentialField,
     FourierCurrentPotentialField,
     OmnigenousField,
-    OmnigenousFieldLCForm,
-    OmnigenousFieldOOPS,
     PoloidalMagneticField,
     SplineMagneticField,
     ToroidalMagneticField,
@@ -78,13 +82,13 @@ from desc.objectives import (
     ObjectiveFromUser,
     ObjectiveFunction,
     Omnigenity,
-    OmnigenityHarmonics,
     PlasmaCoilSetDistanceBound,
     PlasmaCoilSetMinDistance,
     PlasmaVesselDistance,
     Pressure,
     PrincipalCurvature,
     QuadraticFlux,
+    QuasiIsodynamicity,
     QuasisymmetryBoozer,
     QuasisymmetryTripleProduct,
     QuasisymmetryTwoTerm,
@@ -3385,6 +3389,321 @@ def test_loss_function_asserts():
         RotationalTransform(eq=eq, loss_function=fun)
 
 
+def _power_wells(zeta, exponents):
+    """Construct smooth one-minimum wells with field-line-dependent widths."""
+    mid = 0.5 * (zeta[0] + zeta[-1])
+    half_width = 0.5 * (zeta[-1] - zeta[0])
+    u = np.abs((zeta - mid) / half_width)
+    return np.stack([u**p for p in exponents])
+
+
+def _numpy_find_bounce_points(zeta, B, B_star, eps=1e-12):
+    """Reference implementation adapted from qimetric_vmec/goodman_omni.py."""
+    if B_star <= eps:
+        zmin = zeta[np.argmin(B)]
+        return zmin, zmin
+    if B_star >= 1.0 - eps:
+        return zeta[0], zeta[-1]
+
+    diff = B - B_star
+    crossing_idx = np.where(diff[:-1] * diff[1:] < 0)[0]
+    if crossing_idx.size < 2:
+        raise ValueError("Not enough crossings found in numpy reference helper")
+    crossing_idx = [crossing_idx[0], crossing_idx[-1]]
+
+    def interp(i):
+        dy = B[i] - B[i + 1]
+        if np.abs(dy) < eps:
+            return zeta[i]
+        return zeta[i] + (B_star - B[i]) * (zeta[i + 1] - zeta[i]) / dy
+
+    return interp(crossing_idx[0]), interp(crossing_idx[1])
+
+
+def _numpy_goodman_target(B, zeta, levels, eps=1e-12):
+    """Numpy mirror of the sampled-well Goodman construction."""
+
+    def squash_left(y):
+        y = y.copy()
+        imax = np.argmax(y)
+        y[:imax] = y[imax]
+        return np.minimum.accumulate(y)
+
+    def squash_right(y):
+        y = y.copy()
+        imax = np.argmax(y)
+        y[imax:] = y[imax]
+        return np.minimum.accumulate(y[::-1])[::-1]
+
+    def stretch_left(y):
+        den = y[0] - y[-1]
+        return np.zeros_like(y) if np.abs(den) < eps else (y - y[-1]) / den
+
+    def stretch_right(y):
+        den = y[-1] - y[0]
+        return np.zeros_like(y) if np.abs(den) < eps else (y - y[0]) / den
+
+    B = np.asarray(B)
+    Bnorm = (B - B.min()) / max(B.max() - B.min(), eps)
+    nalpha, nphi = B.shape
+    nB = levels.size
+    stretched = np.zeros_like(Bnorm)
+    bounce = np.zeros((nalpha, nB))
+    bounce_pts = np.zeros((nalpha, 2 * nB - 1))
+    weights = np.zeros(nalpha)
+
+    for ia in range(nalpha):
+        well = Bnorm[ia]
+        imin = np.argmin(well)
+        left = stretch_left(squash_left(well[: imin + 1]))
+        right = stretch_right(squash_right(well[imin:]))
+        stretched[ia] = np.concatenate([left[:-1], right])
+        weights[ia] = 1.0 / (np.mean((well - stretched[ia]) ** 2) + eps)
+        for j, level in enumerate(levels):
+            z1, z2 = _numpy_find_bounce_points(zeta, stretched[ia], level, eps=eps)
+            bounce[ia, j] = z2 - z1
+            bounce_pts[ia, nB - j - 1] = z1
+            bounce_pts[ia, nB + j - 1] = z2
+
+    weights /= weights.sum()
+    mean_bounce = np.sum(weights[:, None] * bounce, axis=0)
+    values = np.concatenate([levels[::-1], levels[1:]])
+    target = np.zeros_like(Bnorm)
+
+    for ia in range(nalpha):
+        delta = 0.5 * (bounce[ia] - mean_bounce)
+        left = bounce_pts[ia, :nB] + delta[::-1]
+        right = bounce_pts[ia, nB - 1 :] - delta
+        for i in range(nB - 1):
+            if left[i + 1] <= left[i]:
+                right[-i - 2] += left[i] - left[i + 1] + eps
+                left[i + 1] = left[i] + eps
+            if right[-i - 1] <= right[-i - 2]:
+                left[i + 1] += right[-i - 1] - right[-i - 2] - eps
+                right[-i - 2] = right[-i - 1] - eps
+        knots = np.concatenate([left, right[1:]])
+        target[ia] = np.interp(zeta, knots, values)
+
+    return target
+
+
+@pytest.mark.unit
+def test_qimetric_helper_zero_for_qi_wells():
+    """Piecewise-linear QI wells should be fixed points of the helper target."""
+    zeta = np.linspace(0.0, 2 * np.pi, 65)
+    levels = np.linspace(0.0, 1.0, 33)
+    B = _power_wells(zeta, [1.0, 1.0, 1.0, 1.0])
+    target = np.asarray(
+        _goodman_poloidal_target(
+            jnp.asarray(B), jnp.asarray(zeta), jnp.asarray(levels), 1e-12
+        )
+    )
+    np.testing.assert_allclose(target, B, atol=1e-10)
+
+
+@pytest.mark.unit
+def test_qimetric_helper_equalizes_bounce_distance():
+    """Constructed target should equalize bounce distances across field lines."""
+    zeta = np.linspace(0.0, 2 * np.pi, 65)
+    levels = np.linspace(0.0, 1.0, 25)
+    B = _power_wells(zeta, [1.1, 1.7, 2.3])
+    target = np.asarray(
+        _goodman_poloidal_target(
+            jnp.asarray(B), jnp.asarray(zeta), jnp.asarray(levels), 1e-12
+        )
+    )
+
+    assert np.linalg.norm(target - B) > 1e-4
+
+    deltas = []
+    for well in target:
+        min_idx = int(np.argmin(well))
+        left, right = _crossing_points(
+            jnp.asarray(zeta), jnp.asarray(well), jnp.asarray(levels), min_idx, 1e-12
+        )
+        deltas.append(np.asarray(right - left))
+    deltas = np.stack(deltas)
+    assert np.max(np.abs(deltas - deltas.mean(axis=0, keepdims=True))) < 2e-8
+
+
+@pytest.mark.unit
+def test_qimetric_helper_projects_ordered_knots():
+    """Shuffled knots should remain ordered and inside the sampled period."""
+    zeta = np.linspace(0.0, 2 * np.pi, 65)
+    levels = np.linspace(0.0, 1.0, 17)
+    B = _power_wells(zeta, [1.2, 1.8, 2.2])
+    stretched = []
+    min_idx = []
+    for well in B:
+        s, i = _stretch_well(jnp.asarray(well))
+        stretched.append(np.asarray(s))
+        min_idx.append(int(i))
+    stretched = np.stack(stretched)
+    min_idx = np.asarray(min_idx)
+
+    left = []
+    right = []
+    for s, i in zip(stretched, min_idx):
+        z1, z2 = _crossing_points(
+            jnp.asarray(zeta), jnp.asarray(s), jnp.asarray(levels), i, 1e-12
+        )
+        left.append(np.asarray(z1))
+        right.append(np.asarray(z2))
+    left = np.stack(left)
+    right = np.stack(right)
+
+    weights = 1.0 / (np.mean((B - stretched) ** 2, axis=-1) + 1e-12)
+    weights /= weights.sum()
+    delta = right - left
+    mean_delta = np.sum(weights[:, None] * delta, axis=0)
+    shift = 0.5 * (delta - mean_delta)
+
+    knots = []
+    for l, r, s in zip(left, right, shift):
+        knots.append(
+            np.asarray(
+                _project_knots(
+                    jnp.asarray(l + s),
+                    jnp.asarray(r - s),
+                    zeta[0],
+                    zeta[-1],
+                    1e-12,
+                )
+            )
+        )
+    knots = np.stack(knots)
+    assert np.all(np.diff(knots, axis=-1) > 0)
+    assert np.all(knots >= zeta[0] - 1e-12)
+    assert np.all(knots <= zeta[-1] + 1e-12)
+
+
+@pytest.mark.unit
+def test_qimetric_helper_matches_numpy_reference():
+    """JAX helper should remain close to the legacy sampled-well reference."""
+    zeta = np.linspace(0.0, 2 * np.pi, 65)
+    levels = np.linspace(0.0, 1.0, 21)
+    B = _power_wells(zeta, [1.05, 1.45, 1.95, 2.35])
+
+    target_ref = _numpy_goodman_target(B, zeta, levels)
+    target_jax = np.asarray(
+        _goodman_poloidal_target(
+            jnp.asarray(B), jnp.asarray(zeta), jnp.asarray(levels), 1e-12
+        )
+    )
+    rel_err = np.linalg.norm(target_jax - target_ref) / np.linalg.norm(target_ref)
+    assert rel_err < 0.1
+    assert np.max(np.abs(target_jax - B)) <= np.max(np.abs(target_ref - B))
+
+
+@pytest.mark.unit
+def test_quasiisodynamicity_multi_surface_consistency():
+    """Multi-surface objective output should match concatenated single-surface runs."""
+    surf = FourierRZToroidalSurface.from_qp_model(
+        major_radius=1,
+        aspect_ratio=12,
+        elongation=5,
+        mirror_ratio=0.2,
+        torsion=0.1,
+        NFP=1,
+        sym=True,
+    )
+    eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
+    alpha = np.linspace(0, 2 * np.pi, 4, endpoint=False)
+    common = dict(alpha=alpha, nphi=33, nB=17, M_booz=4, N_booz=4)
+
+    obj1 = QuasiIsodynamicity(eq=eq, grid=LinearGrid(rho=0.5, M=2, N=2), **common)
+    obj2 = QuasiIsodynamicity(eq=eq, grid=LinearGrid(rho=1.0, M=2, N=2), **common)
+    obj12 = QuasiIsodynamicity(
+        eq=eq, grid=LinearGrid(rho=np.array([0.5, 1.0]), M=2, N=2), **common
+    )
+    obj1.build()
+    obj2.build()
+    obj12.build()
+
+    f1 = obj1.compute(eq.params_dict)
+    f2 = obj2.compute(eq.params_dict)
+    f12 = obj12.compute(eq.params_dict)
+    np.testing.assert_allclose(np.concatenate([f1, f2]), f12)
+
+
+@pytest.mark.unit
+def test_quasiisodynamicity_matches_compute_quantity():
+    """Objective output should agree with the qimetric compute diagnostic."""
+    surf = FourierRZToroidalSurface.from_qp_model(
+        major_radius=1,
+        aspect_ratio=12,
+        elongation=5,
+        mirror_ratio=0.2,
+        torsion=0.1,
+        NFP=1,
+        sym=True,
+    )
+    eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
+    alpha = np.linspace(0, 2 * np.pi, 4, endpoint=False)
+    obj = QuasiIsodynamicity(
+        eq=eq,
+        grid=LinearGrid(rho=np.array([0.5]), M=2, N=2),
+        alpha=alpha,
+        nphi=33,
+        nB=17,
+        M_booz=4,
+        N_booz=4,
+    )
+    obj.build(verbose=0)
+    data = eq.compute(
+        "qimetric residual",
+        grid=obj.constants["transforms"]["grid"],
+        M_booz=4,
+        N_booz=4,
+        alpha=obj.constants["alpha"],
+        zeta=obj.constants["zeta"],
+        levels=obj.constants["levels"],
+        eps=obj.constants["eps"],
+    )
+    expected = data["qimetric residual"] / np.sqrt(
+        alpha.size * obj.constants["zeta"].size
+    )
+    np.testing.assert_allclose(obj.compute(eq.params_dict), expected)
+
+
+@pytest.mark.unit
+def test_quasiisodynamicity_batched_jit_compute_scaled_error():
+    """Batched qimetric objective should JIT with static batch hyperparameters."""
+    surf = FourierRZToroidalSurface.from_qp_model(
+        major_radius=1,
+        aspect_ratio=12,
+        elongation=5,
+        mirror_ratio=0.2,
+        torsion=0.1,
+        NFP=1,
+        sym=True,
+    )
+    eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
+    obj = ObjectiveFunction(
+        QuasiIsodynamicity(
+            eq=eq,
+            grid=LinearGrid(rho=np.array([0.5]), M=2, N=2),
+            alpha=np.linspace(0, 2 * np.pi, 4, endpoint=False),
+            nphi=33,
+            nB=17,
+            M_booz=4,
+            N_booz=4,
+            fieldline_batch_size=2,
+            surf_batch_size=1,
+        ),
+        use_jit=True,
+    )
+    obj.build(verbose=0)
+
+    f = obj.compute_scaled_error(obj.x(), obj.constants)
+    f.block_until_ready()
+    assert np.all(np.isfinite(np.asarray(f)))
+
+    g = obj.grad(obj.x(), obj.constants)
+    g.block_until_ready()
+    assert np.all(np.isfinite(np.asarray(g)))
+
+
 def _reduced_resolution_objective(eq, objective, **kwargs):
     """Speed up testing suite by defining rules to reduce objective resolution."""
     if objective in {EffectiveRipple, GammaC}:
@@ -3406,6 +3725,13 @@ def _reduced_resolution_objective(eq, objective, **kwargs):
             ),
         )
         kwargs.setdefault("nzeta", 16 if eq.N else 1)
+    if objective is QuasiIsodynamicity:
+        kwargs.setdefault("grid", LinearGrid(rho=np.array([0.5]), M=2, N=2))
+        kwargs.setdefault("alpha", np.linspace(0, 2 * np.pi, 4, endpoint=False))
+        kwargs.setdefault("nphi", 33)
+        kwargs.setdefault("nB", 17)
+        kwargs.setdefault("M_booz", 4)
+        kwargs.setdefault("N_booz", 4)
     return objective(eq=eq, **kwargs)
 
 
@@ -3439,10 +3765,10 @@ class TestComputeScalarResolution:
         HeatingPowerISS04,
         LinkingCurrentConsistency,
         Omnigenity,
-        OmnigenityHarmonics,
         PlasmaCoilSetDistanceBound,
         PlasmaCoilSetMinDistance,
         PlasmaVesselDistance,
+        QuasiIsodynamicity,
         QuadraticFlux,
         SurfaceQuadraticFlux,
         ToroidalFlux,
@@ -3829,93 +4155,6 @@ class TestComputeScalarResolution:
         np.testing.assert_allclose(f, f[-1], rtol=1e-3)
 
     @pytest.mark.regression
-    def test_compute_scalar_resolution_omnigenityharmonics(self):
-        """Omnigenity harmonics."""
-        surf = FourierRZToroidalSurface.from_qp_model(
-            major_radius=1,
-            aspect_ratio=20,
-            elongation=6,
-            mirror_ratio=0.2,
-            torsion=0.1,
-            NFP=1,
-            sym=True,
-        )
-        eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
-        eq, _ = eq.solve(objective="force", verbose=3)
-        field = OmnigenousField(
-            L_B=0,
-            M_B=2,
-            L_x=0,
-            M_x=0,
-            N_x=0,
-            NFP=eq.NFP,
-            helicity=(0, eq.NFP),
-            B_lm=np.array([0.8, 1.2]),
-        )
-        f = np.zeros_like(self.res_array, dtype=float)
-        for i, res in enumerate(self.res_array + 1):  # omnigenity needs higher res
-            grid = LinearGrid(M=int(eq.M * res), N=int(eq.N * res), NFP=eq.NFP)
-            obj = ObjectiveFunction(
-                OmnigenityHarmonics(
-                    eq=eq, field=field, field_type="desc", eq_grid=grid, field_grid=grid
-                )
-            )
-            obj.build(verbose=0)
-            f[i] = obj.compute_scalar(obj.x(eq, field))
-        np.testing.assert_allclose(f, f[-1], rtol=1e-3)
-
-        field = OmnigenousFieldOOPS(
-            S_len=2,
-            D_len=2,
-            NFP=eq.NFP,
-            helicity=(0, 1),
-            S_list=np.array([0.3, 0]),
-            D_list=np.array([0, 0]),
-        )
-        f = np.zeros_like(self.res_array, dtype=float)
-        for i, res in enumerate(self.res_array + 1):  # omnigenity needs higher res
-            grid = LinearGrid(M=int(eq.M * res), N=int(eq.N * res), NFP=eq.NFP)
-            obj = ObjectiveFunction(
-                OmnigenityHarmonics(
-                    eq=eq, field=field, field_type="oops", eq_grid=grid, field_grid=grid
-                )
-            )
-            obj.build(verbose=0)
-            f[i] = obj.compute_scalar(obj.x(eq, field))
-        np.testing.assert_allclose(f, f[-1], rtol=1e-3)
-
-        field = OmnigenousFieldLCForm(
-            S_len=2,
-            D_len=1,
-            NFP=eq.NFP,
-            helicity=(0, 1),
-            S_list=np.array([0.3, 0.2]),
-            D_list=np.array([1]),
-            S_func=lambda x2d, y2d, S_list: S_list[0]
-            * (x2d)
-            * jnp.sin(y2d + S_list[1] * jnp.sin(y2d)),
-            D_func=lambda x2d, D_list: (jnp.pi ** (D_list[0] - 1)) ** (1 / D_list[0])
-            * (jnp.clip(jnp.pi - x2d, 0, 1)) ** (1 / D_list[0]),
-        )
-        f = np.zeros_like(self.res_array, dtype=float)
-        for i, res in enumerate(self.res_array + 1):  # omnigenity needs higher res
-            grid = LinearGrid(M=int(eq.M * res), N=int(eq.N * res), NFP=eq.NFP)
-            obj = ObjectiveFunction(
-                OmnigenityHarmonics(
-                    eq=eq,
-                    field=field,
-                    field_type="lcform",
-                    eq_grid=grid,
-                    field_grid=grid,
-                )
-            )
-            obj.build(verbose=0)
-            f[i] = obj.compute_scalar(obj.x(eq, field))
-        np.testing.assert_allclose(
-            f, f[-1], rtol=1e-2
-        )  # it need 1e-2... I don't know why
-
-    @pytest.mark.regression
     @pytest.mark.parametrize(
         "objective", sorted(other_objectives, key=lambda x: str(x.__name__))
     )
@@ -4021,10 +4260,10 @@ class TestObjectiveNaNGrad:
         HeatingPowerISS04,
         LinkingCurrentConsistency,
         Omnigenity,
-        OmnigenityHarmonics,
         PlasmaCoilSetDistanceBound,
         PlasmaCoilSetMinDistance,
         PlasmaVesselDistance,
+        QuasiIsodynamicity,
         QuadraticFlux,
         SurfaceCurrentRegularization,
         SurfaceQuadraticFlux,
@@ -4326,74 +4565,35 @@ class TestObjectiveNaNGrad:
         assert not np.any(np.isnan(g)), str(helicity)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("helicity", [(1, 0), (1, 1), (0, 1)])
-    def test_objective_no_nangrad_omnigenityharmonics(self, helicity):
-        """OmnigenityHarmonics."""
+    def test_objective_no_nangrad_quasiisodynamicity(self):
+        """QuasiIsodynamicity."""
         surf = FourierRZToroidalSurface.from_qp_model(
             major_radius=1,
-            aspect_ratio=20,
-            elongation=6,
+            aspect_ratio=12,
+            elongation=5,
             mirror_ratio=0.2,
             torsion=0.1,
             NFP=1,
             sym=True,
         )
         eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
-        field = OmnigenousField(
-            L_B=0,
-            M_B=2,
-            L_x=1,
-            M_x=1,
-            N_x=1,
-            NFP=eq.NFP,
-            helicity=helicity,
-            B_lm=np.array([0.8, 1.2]),
+        base_kwargs = dict(
+            eq=eq,
+            grid=LinearGrid(rho=np.array([0.5]), M=2, N=2),
+            alpha=np.linspace(0, 2 * np.pi, 4, endpoint=False),
+            nphi=33,
+            nB=17,
+            M_booz=4,
+            N_booz=4,
         )
-        obj = ObjectiveFunction(
-            OmnigenityHarmonics(eq=eq, field=field, field_type="desc")
-        )
-        obj.build()
-        g = obj.grad(obj.x())
-        assert not np.any(np.isnan(g)), (str(helicity), "desc")
-
-        field = OmnigenousFieldOOPS(
-            S_len=2,
-            D_len=2,
-            NFP=eq.NFP,
-            helicity=helicity,
-            S_list=np.array([0.3, 0]),
-            D_list=np.array([0, 0]),
-        )
-        obj = ObjectiveFunction(
-            OmnigenityHarmonics(eq=eq, field=field, field_type="oops")
-        )
-        obj.build()
-        g = obj.grad(obj.x())
-        assert not np.any(np.isnan(g)), (str(helicity), "oops")
-
-        field = OmnigenousFieldLCForm(
-            S_len=2,
-            D_len=1,
-            NFP=eq.NFP,
-            helicity=helicity,
-            S_list=np.array([0.3, 0.2]),
-            D_list=np.array([1]),
-            S_func=lambda x2d, y2d, S_list: S_list[0]
-            * (x2d)
-            * jnp.sin(y2d + S_list[1] * jnp.sin(y2d)),
-            D_func=lambda x2d, D_list: (jnp.pi ** (D_list[0] - 1)) ** (1 / D_list[0])
-            * (jnp.clip(jnp.pi - x2d, 0, 1)) ** (1 / D_list[0]),
-        )
-        obj = ObjectiveFunction(
-            OmnigenityHarmonics(
-                eq=eq,
-                field=field,
-                field_type="lcform",
+        for batch_kwargs in ({}, {"fieldline_batch_size": 2, "surf_batch_size": 1}):
+            obj = ObjectiveFunction(
+                QuasiIsodynamicity(**base_kwargs, **batch_kwargs),
+                use_jit=False,
             )
-        )
-        obj.build(verbose=3)
-        g = obj.grad(obj.x())
-        assert not np.any(np.isnan(g)), (str(helicity), "lcform")
+            obj.build(verbose=0)
+            g = obj.grad(obj.x())
+            assert not np.any(np.isnan(g))
 
     @pytest.mark.unit
     def test_objective_no_nangrad_effective_ripple(self):

@@ -12,6 +12,8 @@ from desc.grid import Grid, LinearGrid
 from desc.io import load
 from desc.utils import cross, dot, rpz2xyz_vec
 
+from desc.compute._qimetric import _goodman_poloidal_target
+
 # convolve kernel is reverse of FD coeffs
 FD_COEF_1_2 = np.array([-1 / 2, 0, 1 / 2])[::-1]
 FD_COEF_1_4 = np.array([1 / 12, -2 / 3, 0, 2 / 3, -1 / 12])[::-1]
@@ -34,6 +36,14 @@ def myconvolve_2d(arr_1d, stencil, shape):
         boundary="fill",  # not periodic in rho, easier to pad and truncate in all dims
     )
     return conv
+
+
+def _qimetric_power_wells(zeta, exponents):
+    """Construct smooth one-minimum wells with field-line-dependent widths."""
+    mid = 0.5 * (zeta[0] + zeta[-1])
+    half_width = 0.5 * (zeta[-1] - zeta[0])
+    u = np.abs((zeta - mid) / half_width)
+    return np.stack([u**p for p in exponents])
 
 
 @pytest.mark.unit
@@ -1154,6 +1164,86 @@ def test_boozer_transform_multiple_surfaces():
     np.testing.assert_allclose(
         data2["|B|_mn_B"], data3["|B|_mn_B"].reshape((grid3.num_rho, -1))[1]
     )
+
+
+@pytest.mark.unit
+def test_qimetric_helper_fixed_point():
+    """Already-QI sampled wells should be fixed points of the compute helper."""
+    zeta = np.linspace(0.0, 2 * np.pi, 65)
+    levels = np.linspace(0.0, 1.0, 33)
+    B = _qimetric_power_wells(zeta, [1.0, 1.0, 1.0, 1.0])
+    target = np.asarray(
+        _goodman_poloidal_target(
+            B,
+            zeta,
+            levels,
+            1e-12,
+            fieldline_batch_size=2,
+        )
+    )
+    np.testing.assert_allclose(target, B, atol=1e-10)
+
+
+@pytest.mark.unit
+def test_qimetric_compute_batches_and_surfaces():
+    """qimetric compute diagnostics should be batch- and surface-consistent."""
+    surf = FourierRZToroidalSurface.from_qp_model(
+        major_radius=1,
+        aspect_ratio=12,
+        elongation=5,
+        mirror_ratio=0.2,
+        torsion=0.1,
+        NFP=1,
+        sym=True,
+    )
+    eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
+    alpha = np.linspace(0, 2 * np.pi, 4, endpoint=False)
+    zeta = np.linspace(0.0, 2 * np.pi, 33)
+    levels = np.linspace(0.0, 1.0, 17)
+    names = [
+        "qimetric |B|",
+        "qimetric constructed |B|",
+        "qimetric target |B|",
+        "qimetric weights",
+        "qimetric bounce points",
+        "qimetric shuffled knots",
+        "qimetric residual",
+    ]
+
+    grid1 = LinearGrid(rho=np.array([0.5]), M=8, N=8)
+    grid2 = LinearGrid(rho=np.array([1.0]), M=8, N=8)
+    grid12 = LinearGrid(rho=np.array([0.5, 1.0]), M=8, N=8)
+    common = dict(M_booz=4, N_booz=4, alpha=alpha, zeta=zeta, levels=levels, eps=1e-12)
+
+    data12 = eq.compute(names, grid=grid12, **common)
+    data12_batched = eq.compute(
+        names,
+        grid=grid12,
+        fieldline_batch_size=2,
+        surf_batch_size=1,
+        **common,
+    )
+    data1 = eq.compute(names, grid=grid1, **common)
+    data2 = eq.compute(names, grid=grid2, **common)
+
+    nk = 2 * levels.size - 1
+    reshapes = {
+        "qimetric |B|": (grid12.num_rho, alpha.size, zeta.size),
+        "qimetric constructed |B|": (grid12.num_rho, alpha.size, zeta.size),
+        "qimetric target |B|": (grid12.num_rho, alpha.size, zeta.size),
+        "qimetric weights": (grid12.num_rho, alpha.size),
+        "qimetric bounce points": (grid12.num_rho, alpha.size, nk),
+        "qimetric shuffled knots": (grid12.num_rho, alpha.size, nk),
+        "qimetric residual": (grid12.num_rho, alpha.size, zeta.size),
+    }
+
+    for name, shape in reshapes.items():
+        np.testing.assert_allclose(data12[name], data12_batched[name])
+        arr12 = np.asarray(data12[name]).reshape(shape)
+        arr1 = np.asarray(data1[name]).reshape((1,) + shape[1:])
+        arr2 = np.asarray(data2[name]).reshape((1,) + shape[1:])
+        np.testing.assert_allclose(arr12[0:1], arr1)
+        np.testing.assert_allclose(arr12[1:2], arr2)
 
 
 @pytest.mark.unit

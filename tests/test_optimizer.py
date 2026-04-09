@@ -55,6 +55,7 @@ from desc.objectives import (
     ObjectiveFunction,
     PlasmaVesselDistance,
     QuadraticFlux,
+    QuasiIsodynamicity,
     QuasisymmetryTripleProduct,
     Volume,
     get_fixed_boundary_constraints,
@@ -408,6 +409,46 @@ def test_no_iterations():
 
     np.testing.assert_allclose(x0, out1["x"])
     np.testing.assert_allclose(x0, out2["x"])
+
+
+@pytest.mark.unit
+def test_lsq_exact_qimetric_batched_static_hyperparams():
+    """lsq-exact should accept batched qimetric objectives under JIT."""
+    surf = FourierRZToroidalSurface.from_qp_model(
+        major_radius=1,
+        aspect_ratio=12,
+        elongation=5,
+        mirror_ratio=0.2,
+        torsion=0.1,
+        NFP=1,
+        sym=True,
+    )
+    eq = Equilibrium(Psi=6e-3, M=4, N=4, surface=surf)
+    objective = ObjectiveFunction(
+        QuasiIsodynamicity(
+            eq=eq,
+            grid=LinearGrid(rho=np.array([0.5]), M=2, N=2),
+            alpha=np.linspace(0, 2 * np.pi, 4, endpoint=False),
+            nphi=33,
+            nB=17,
+            M_booz=4,
+            N_booz=4,
+            fieldline_batch_size=2,
+            surf_batch_size=1,
+        ),
+        use_jit=True,
+    )
+    optimizer = Optimizer("lsq-exact")
+    (eq_new,), result = optimizer.optimize(
+        things=eq,
+        objective=objective,
+        constraints=get_fixed_boundary_constraints(eq=eq),
+        maxiter=1,
+        verbose=0,
+        copy=True,
+    )
+    assert isinstance(eq_new, Equilibrium)
+    assert result["nit"] <= 1
 
 
 @pytest.mark.regression
