@@ -1052,6 +1052,7 @@ class OmnigenityHarmonics(_Objective):
         "_is_imag",
         "S_function",
         "D_function",
+        "fake_iota",
     ]
     _coordinates = "rtz"
     _units = "~"
@@ -1075,6 +1076,7 @@ class OmnigenityHarmonics(_Objective):
         N_booz=None,
         M_harmonics=None,
         N_harmonics=None,
+        fake_iota=None,
         eq_fixed=False,
         field_fixed=False,
         name="omnigenity_harmonics",
@@ -1100,6 +1102,7 @@ class OmnigenityHarmonics(_Objective):
         self.N_harmonics = N_harmonics
         self.S_function = None
         self.D_function = None
+        self.fake_iota = fake_iota
         if self._field_type == "lcform":
             # Ensure the provided field supplies the required callable attributes
             missing = []
@@ -1374,7 +1377,11 @@ class OmnigenityHarmonics(_Objective):
                 field_data = constants["field_data"]
                 # update theta_B and zeta_B with new iota from the equilibrium
                 M, N = constants["helicity"]
-                iota = eq_data["iota"][eq_grid.unique_rho_idx]
+                if self.fake_iota is not None:
+                    shape = eq_data["iota"][eq_grid.unique_rho_idx].shape
+                    iota = jnp.full(shape, self.fake_iota)
+                else:
+                    iota = eq_data["iota"][eq_grid.unique_rho_idx]
                 theta_B, zeta_B = _omnigenity_mapping(
                     M,
                     N,
@@ -1384,6 +1391,11 @@ class OmnigenityHarmonics(_Objective):
                     field_grid,
                 )
             else:
+                if self.fake_iota is not None:
+                    shape = eq_data["iota"][eq_grid.unique_rho_idx].shape
+                    iota = jnp.full(shape, self.fake_iota)
+                else:
+                    iota = eq_data["iota"][eq_grid.unique_rho_idx]
                 field_data = compute_fun(
                     "desc.magnetic_fields._core.OmnigenousField",
                     self._field_data_keys,
@@ -1391,7 +1403,7 @@ class OmnigenityHarmonics(_Objective):
                     transforms=constants["field_transforms"],
                     profiles={},
                     helicity=constants["helicity"],
-                    iota=eq_data["iota"][eq_grid.unique_rho_idx],
+                    iota=iota,
                 )
                 theta_B = field_data["theta_B"]
                 zeta_B = field_data["zeta_B"]
@@ -1400,7 +1412,11 @@ class OmnigenityHarmonics(_Objective):
                 field_data = constants["field_data"]
                 # update theta_B and zeta_B with new iota from the equilibrium
                 M, N = constants["helicity"]
-                iota = eq_data["iota"][eq_grid.unique_rho_idx]
+                if self.fake_iota is not None:
+                    shape = eq_data["iota"][eq_grid.unique_rho_idx].shape
+                    iota = jnp.full(shape, self.fake_iota)
+                else:
+                    iota = eq_data["iota"][eq_grid.unique_rho_idx]
                 theta_B, zeta_B = _omnigenity_mapping_OOPS(
                     M,
                     N,
@@ -1410,6 +1426,12 @@ class OmnigenityHarmonics(_Objective):
                     field_grid,
                 )
             else:
+                if self.fake_iota is not None:
+                    shape = eq_data["iota"][eq_grid.unique_rho_idx].shape
+                    iota = jnp.full(shape, self.fake_iota)
+                else:
+                    iota = eq_data["iota"][eq_grid.unique_rho_idx]
+
                 field_data = compute_fun(
                     "desc.magnetic_fields._core.OmnigenousFieldOOPS",
                     self._field_data_keys,
@@ -1417,7 +1439,7 @@ class OmnigenityHarmonics(_Objective):
                     transforms=constants["field_transforms"],
                     profiles={},
                     helicity=constants["helicity"],
-                    iota=eq_data["iota"][eq_grid.unique_rho_idx],  # For test
+                    iota=iota,  # For test
                 )
                 theta_B = field_data["theta_B_OOPS"]
                 zeta_B = field_data["zeta_B_OOPS"]
@@ -1426,7 +1448,11 @@ class OmnigenityHarmonics(_Objective):
                 field_data = constants["field_data"]
                 # update theta_B and zeta_B with new iota from the equilibrium
                 M, N = constants["helicity"]
-                iota = eq_data["iota"][eq_grid.unique_rho_idx]
+                if self.fake_iota is not None:
+                    shape = eq_data["iota"][eq_grid.unique_rho_idx].shape
+                    iota = jnp.full(shape, self.fake_iota)
+                else:
+                    iota = eq_data["iota"][eq_grid.unique_rho_idx]
                 theta_B, zeta_B = _omnigenity_mapping_LandremanForm(
                     M,
                     N,
@@ -1438,6 +1464,11 @@ class OmnigenityHarmonics(_Objective):
                     field_grid,
                 )
             else:
+                if self.fake_iota is not None:
+                    shape = eq_data["iota"][eq_grid.unique_rho_idx].shape
+                    iota = jnp.full(shape, self.fake_iota)
+                else:
+                    iota = eq_data["iota"][eq_grid.unique_rho_idx]
                 field_data = compute_fun(
                     "desc.magnetic_fields._core.OmnigenousFieldLCForm",
                     self._field_data_keys,
@@ -1445,7 +1476,8 @@ class OmnigenityHarmonics(_Objective):
                     transforms=constants["field_transforms"],
                     profiles={},
                     helicity=constants["helicity"],
-                    iota=eq_data["iota"][eq_grid.unique_rho_idx],  # For test
+                    # iota=eq_data["iota"][eq_grid.unique_rho_idx],  # For test
+                    iota=iota,
                     S_func=self.S_function,
                     D_func=self.D_function,
                 )
