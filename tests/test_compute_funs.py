@@ -1186,7 +1186,7 @@ def test_qimetric_helper_fixed_point():
 
 @pytest.mark.unit
 def test_qimetric_compute_batches_and_surfaces():
-    """qimetric compute diagnostics should be batch- and surface-consistent."""
+    """qimetric residual should be batch- and surface-consistent."""
     surf = FourierRZToroidalSurface.from_qp_model(
         major_radius=1,
         aspect_ratio=12,
@@ -1200,50 +1200,49 @@ def test_qimetric_compute_batches_and_surfaces():
     alpha = np.linspace(0, 2 * np.pi, 4, endpoint=False)
     zeta = np.linspace(0.0, 2 * np.pi, 33)
     levels = np.linspace(0.0, 1.0, 17)
-    names = [
-        "qimetric |B|",
-        "qimetric constructed |B|",
-        "qimetric target |B|",
-        "qimetric weights",
-        "qimetric bounce points",
-        "qimetric shuffled knots",
-        "qimetric residual",
-    ]
+    name = "qimetric residual"
 
     grid1 = LinearGrid(rho=np.array([0.5]), M=8, N=8)
     grid2 = LinearGrid(rho=np.array([1.0]), M=8, N=8)
     grid12 = LinearGrid(rho=np.array([0.5, 1.0]), M=8, N=8)
     common = dict(M_booz=4, N_booz=4, alpha=alpha, zeta=zeta, levels=levels, eps=1e-12)
 
-    data12 = eq.compute(names, grid=grid12, **common)
+    data12 = eq.compute(name, grid=grid12, **common)
     data12_batched = eq.compute(
-        names,
+        name,
         grid=grid12,
         fieldline_batch_size=2,
         surf_batch_size=1,
         **common,
     )
-    data1 = eq.compute(names, grid=grid1, **common)
-    data2 = eq.compute(names, grid=grid2, **common)
+    data1 = eq.compute(name, grid=grid1, **common)
+    data2 = eq.compute(name, grid=grid2, **common)
 
-    nk = 2 * levels.size - 1
-    reshapes = {
-        "qimetric |B|": (grid12.num_rho, alpha.size, zeta.size),
-        "qimetric constructed |B|": (grid12.num_rho, alpha.size, zeta.size),
-        "qimetric target |B|": (grid12.num_rho, alpha.size, zeta.size),
-        "qimetric weights": (grid12.num_rho, alpha.size),
-        "qimetric bounce points": (grid12.num_rho, alpha.size, nk),
-        "qimetric shuffled knots": (grid12.num_rho, alpha.size, nk),
-        "qimetric residual": (grid12.num_rho, alpha.size, zeta.size),
+    shape = (grid12.num_rho, alpha.size, zeta.size)
+    np.testing.assert_allclose(data12[name], data12_batched[name])
+    arr12 = np.asarray(data12[name]).reshape(shape)
+    arr1 = np.asarray(data1[name]).reshape((1,) + shape[1:])
+    arr2 = np.asarray(data2[name]).reshape((1,) + shape[1:])
+    np.testing.assert_allclose(arr12[0:1], arr1)
+    np.testing.assert_allclose(arr12[1:2], arr2)
+
+
+@pytest.mark.unit
+def test_qimetric_diagnostics_are_not_registered():
+    """Implementation diagnostics should stay out of the compute registry."""
+    from desc.compute import data_index
+
+    diagnostics = {
+        "qimetric |B|",
+        "qimetric constructed |B|",
+        "qimetric target |B|",
+        "qimetric weights",
+        "qimetric bounce distances",
+        "qimetric bounce points",
+        "qimetric shuffled knots",
     }
-
-    for name, shape in reshapes.items():
-        np.testing.assert_allclose(data12[name], data12_batched[name])
-        arr12 = np.asarray(data12[name]).reshape(shape)
-        arr1 = np.asarray(data1[name]).reshape((1,) + shape[1:])
-        arr2 = np.asarray(data2[name]).reshape((1,) + shape[1:])
-        np.testing.assert_allclose(arr12[0:1], arr1)
-        np.testing.assert_allclose(arr12[1:2], arr2)
+    index = data_index["desc.equilibrium.equilibrium.Equilibrium"]
+    assert diagnostics.isdisjoint(index)
 
 
 @pytest.mark.unit

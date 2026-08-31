@@ -20,6 +20,7 @@ from desc.basis import fourier, zernike_radial_poly
 from desc.batching import vmap_chunked
 from desc.coils import CoilSet, _Coil
 from desc.compute import data_index, get_transforms
+from desc.compute._qimetric import _compute_qimetric_data
 from desc.compute.utils import _parse_parameterization
 from desc.equilibrium.coords import map_coordinates
 from desc.grid import Grid, LinearGrid
@@ -3336,7 +3337,7 @@ def plot_qimetric(
     rho=1,
     alpha=None,
     fieldlines=4,
-    nphi=200,
+    nphi=201,
     nB=81,
     ax=None,
     return_data=False,
@@ -3422,43 +3423,61 @@ def plot_qimetric(
         "plot_qimetric only supports a single flux surface.",
     )
 
-    names = [
-        "qimetric |B|",
-        "qimetric constructed |B|",
-        "qimetric target |B|",
-        "qimetric weights",
-        "qimetric bounce points",
-        "qimetric shuffled knots",
+    transforms = get_transforms(
         "qimetric residual",
-    ]
+        obj=eq,
+        grid=grid_compute,
+        M_booz=M_booz,
+        N_booz=N_booz,
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         data = eq.compute(
-            names,
+            ["|B|_mn_B", "iota"],
             grid=grid_compute,
-            M_booz=M_booz,
-            N_booz=N_booz,
-            alpha=alpha,
-            zeta=zeta,
-            levels=levels,
-            eps=eps,
-            fieldline_batch_size=fieldline_batch_size,
-            surf_batch_size=surf_batch_size,
+            transforms=transforms,
         )
 
+    (
+        B,
+        B_constructed,
+        B_target,
+        weights,
+        _,
+        bounce_points,
+        shuffled_knots,
+        residual,
+    ) = _compute_qimetric_data(
+        transforms,
+        data,
+        alpha,
+        zeta,
+        levels,
+        eps,
+        (fieldline_batch_size, surf_batch_size),
+    )
+    (
+        B,
+        B_constructed,
+        B_target,
+        weights,
+        bounce_points,
+        shuffled_knots,
+        residual,
+    ) = map(
+        lambda x: np.asarray(x)[0],
+        (
+            B,
+            B_constructed,
+            B_target,
+            weights,
+            bounce_points,
+            shuffled_knots,
+            residual,
+        ),
+    )
+
     na = alpha.size
-    nk = 2 * nB - 1
-    B = np.asarray(data["qimetric |B|"]).reshape((1, na, nphi))[0]
-    B_constructed = np.asarray(data["qimetric constructed |B|"]).reshape(
-        (1, na, nphi)
-    )[0]
-    B_target = np.asarray(data["qimetric target |B|"]).reshape((1, na, nphi))[0]
-    weights = np.asarray(data["qimetric weights"]).reshape((1, na))[0]
-    bounce_points = np.asarray(data["qimetric bounce points"]).reshape((1, na, nk))[0]
-    shuffled_knots = np.asarray(data["qimetric shuffled knots"]).reshape(
-        (1, na, nk)
-    )[0]
-    residual = np.asarray(data["qimetric residual"]).reshape((1, na, nphi))[0]
 
     fig, ax = _format_ax(ax, rows=2, cols=1, figsize=kwargs.pop("figsize", (7, 6)))
     ax = np.atleast_1d(ax).flatten()

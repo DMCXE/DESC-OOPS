@@ -78,7 +78,7 @@ class QuasiIsodynamicity(_Objective):
         deriv_mode="auto",
         grid=None,
         alpha=None,
-        nphi=200,
+        nphi=201,
         nB=81,
         M_booz=None,
         N_booz=None,

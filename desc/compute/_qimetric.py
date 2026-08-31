@@ -261,6 +261,7 @@ _QIMETRIC_DOC = {
     **_QIMETRIC_DOC,
 )
 def _qimetric_residual(params, transforms, profiles, data, **kwargs):
+    # noqa: unused dependency
     alpha = kwargs["alpha"]
     zeta = kwargs["zeta"]
     levels = kwargs["levels"]
@@ -268,16 +269,7 @@ def _qimetric_residual(params, transforms, profiles, data, **kwargs):
     fieldline_batch_size = kwargs.get("fieldline_batch_size", None)
     surf_batch_size = kwargs.get("surf_batch_size", None)
 
-    (
-        B,
-        constructed,
-        target,
-        weights,
-        bounce_distances,
-        bounce_points,
-        shuffled_knots,
-        residual,
-    ) = _compute_qimetric_data(
+    residual = _compute_qimetric_data(
         transforms,
         data,
         alpha,
@@ -285,144 +277,6 @@ def _qimetric_residual(params, transforms, profiles, data, **kwargs):
         levels,
         eps,
         (fieldline_batch_size, surf_batch_size),
-    )
-    data["qimetric |B|"] = B.reshape(-1)
-    data["qimetric constructed |B|"] = constructed.reshape(-1)
-    data["qimetric target |B|"] = target.reshape(-1)
-    data["qimetric weights"] = weights.reshape(-1)
-    data["qimetric bounce distances"] = bounce_distances.reshape(-1)
-    data["qimetric bounce points"] = bounce_points.reshape(-1)
-    data["qimetric shuffled knots"] = shuffled_knots.reshape(-1)
+    )[-1]
     data["qimetric residual"] = residual.reshape(-1)
     return data
-
-
-def _qimetric_passthrough(params, transforms, profiles, data, **kwargs):
-    """No-op passthrough for qimetric diagnostics computed by qimetric residual."""
-    return data
-
-
-@register_compute_fun(
-    name="qimetric |B|",
-    label="qimetric |B|",
-    units="~",
-    units_long="None",
-    description="Normalized Boozer field-line samples used by the qimetric diagnostic.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_B(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
-
-
-@register_compute_fun(
-    name="qimetric constructed |B|",
-    label="qimetric constructed |B|",
-    units="~",
-    units_long="None",
-    description="Goodman squash-stretch field-line construction.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_constructed(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
-
-
-@register_compute_fun(
-    name="qimetric target |B|",
-    label="qimetric target |B|",
-    units="~",
-    units_long="None",
-    description="Constructed Goodman quasi-isodynamic target field.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_target(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
-
-
-@register_compute_fun(
-    name="qimetric weights",
-    label="qimetric weights",
-    units="~",
-    units_long="None",
-    description="Field-line weights used by the Goodman shuffle.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_weights(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
-
-
-@register_compute_fun(
-    name="qimetric bounce distances",
-    label="qimetric bounce distances",
-    units="rad",
-    units_long="radians",
-    description="Bounce distances of the squash-stretch wells.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_bounce_distances(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
-
-
-@register_compute_fun(
-    name="qimetric bounce points",
-    label="qimetric bounce points",
-    units="rad",
-    units_long="radians",
-    description="Bounce-point knots before the Goodman shuffle projection.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_bounce_points(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
-
-
-@register_compute_fun(
-    name="qimetric shuffled knots",
-    label="qimetric shuffled knots",
-    units="rad",
-    units_long="radians",
-    description="Projected knot locations after the Goodman shuffle.",
-    dim=1,
-    params=[],
-    transforms={},
-    profiles=[],
-    coordinates="r",
-    data=["qimetric residual"],
-    public=False,
-)
-def _qimetric_shuffled_knots(params, transforms, profiles, data, **kwargs):
-    return _qimetric_passthrough(params, transforms, profiles, data, **kwargs)
