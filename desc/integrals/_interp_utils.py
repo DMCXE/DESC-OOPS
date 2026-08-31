@@ -802,6 +802,9 @@ def polyroot_vec(
         # Compute from analytic formula to avoid the issue of complex roots with small
         # imaginary parts and to avoid nan in gradient. Also consumes less memory.
         r = func[num_coef](C=c, sentinel=sentinel, eps=eps, distinct=distinct)
+        # ``_root_linear`` returns one scalar root per polynomial. Restore the
+        # explicit root axis expected by the filtering and sorting below.
+        r = r[..., None] if num_coef == 2 else r
         # We already filtered distinct roots for quadratics.
         distinct = distinct and num_coef > 3
     else:

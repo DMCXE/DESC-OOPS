@@ -57,6 +57,7 @@ from ._power_balance import FusionPower, HeatingPowerISS04
 from ._profiles import Pressure, RotationalTransform, Shear, ToroidalCurrent
 from ._qimetric import QuasiIsodynamicity
 from ._qimetric_reduced import QuasiIsodynamicReduced
+from ._qimetric_target import QuasiIsodynamic
 from ._stability import BallooningStability, MagneticWell, MercierStability
 from ._turbulence import FluxCompressionITGProxy
 from .getters import (

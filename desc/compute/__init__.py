@@ -43,6 +43,7 @@ from . import (
     _profiles,
     _qimetric,
     _qimetric_reduced,
+    _qimetric_target,
     _stability,
     _surface,
     _turbulence,

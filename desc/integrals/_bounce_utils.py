@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 
 from desc.backend import dct, ifft, jnp
 from desc.integrals._interp_utils import (
+    _eps,
     cheb_from_dct,
     cheb_pts,
     idct_mmt,
@@ -92,6 +93,15 @@ def bounce_points(pitch_inv, knots, B, dB_dz, num_well=None):
     )
     # Only consider intersect if it is within knots that bound that polynomial.
     mask = flatten_mat(intersect >= 0)
+    if B.shape[-1] == 2:
+        # For a piecewise-linear plateau at the pitch value, retain the endpoints
+        # adjacent to the strict sublevel set B < 1/λ. The other plateau endpoints
+        # do not bound a trapped interval.
+        at_left = flatten_mat(jnp.isclose(intersect, 0, rtol=0, atol=_eps))
+        at_right = flatten_mat(
+            jnp.isclose(intersect, jnp.diff(knots)[:, None], rtol=0, atol=_eps)
+        )
+        mask &= ((dB_dz < 0) & ~at_right) | ((dB_dz > 0) & ~at_left)
     # We ignore the bounce points of particles only assigned to a class that are
     # trapped outside this snapshot of the field line.
     z1 = (dB_dz <= 0) & mask
