@@ -42,6 +42,7 @@ from . import (
     _omnigenity,
     _profiles,
     _qimetric,
+    _qimetric_reduced,
     _stability,
     _surface,
     _turbulence,
